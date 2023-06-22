@@ -7,6 +7,12 @@ sys.path.append('./TGAM1')
 from TGAMPacketParser import *
 from TGAMPacketPayloadParser import *
 import serial
+import time
+from switchUtils import *
+import time
+
+
+lightSmartSwitchId = 'smart_switch0'
 
 
 def drawProgressBar(canvas, x, y, w, h, perc):
@@ -25,17 +31,10 @@ def clamp(value, min_v, max_v):
     return max(min_v, min(value, max_v))
 
 def newPerc1(payloadParser, perc):
-    if payloadParser.attention > 0.5:
-        return perc + 0.05
+    if payloadParser.attention >= 50:
+        return perc + 0.25
     else:
-        return perc - 0.05
-    
-def newPerc2(payloadParser, perc):
-    if payloadParser.attention > payloadParser.meditation + 0.1:
-        return perc + 0.05
-    else:
-        return perc - 0.05
-    
+        return perc - 0.25
 
 def newPerc(payloadParser, perc):
     return clamp(newPerc1(payloadParser, perc), 0.0, 1.0)
@@ -45,13 +44,19 @@ if __name__ == "__main__" :
 	device = ssd1306(port=3, address=0x3C)
 	video_object = cv2.VideoCapture(1)
 	parser = TGAMPacketParser()
+	qrDetector = cv2.QRCodeDetector()
 
 	perc = 0.0
+	poorSignal = -1
+	lastQrValue = ''
+	lastTime = time.time()
+
+	lightController = SwitchController('192.168.0.101', 0)
+
 
 	with serial.Serial('/dev/ttyS5', 9600, timeout=10) as ser:
 		while True:
-
-			if ser.in_waiting > 0:
+			while ser.in_waiting > 0:
 				byte = int.from_bytes(ser.read(1), "little")
 				isValid, payload = parser.parseByte(byte)
 
@@ -59,14 +64,36 @@ if __name__ == "__main__" :
 					payloadParser = TGAMPacketPayloadParser()
 					payloadParser.parsePayload(payload)
 					perc = newPerc(payloadParser, perc)
+					poorSignal = payloadParser.poorSignal
+					print(poorSignal)
 
-			_, frame = video_object.read()
-			qrDetector = cv2.QRCodeDetector()
-			qrValue, *_ = qrDetector.detectAndDecode(frame)
+			currTime = time.time()
 
-			with canvas(device) as draw:
-				font = ImageFont.truetype("ProFontWindows.ttf", size=10)
-				draw.rectangle((0, 0, device.width, device.height), outline=0, fill=0)
-				drawText(canvas, 32, 16, 8, f'qr code: {qrValue}', font, 8)
-				drawProgressBar(canvas, 32, 48, 64, 8, perc)
-			
+			if currTime - lastTime >= 0.5:
+				lastTime = currTime
+
+				_, frame = video_object.read()
+				qrValue, *_ = qrDetector.detectAndDecode(frame)
+
+				#perc += 0.25
+
+				if qrValue != lastQrValue or qrValue != lightSmartSwitchId:
+					perc = 0.0
+
+				lastQrValue = qrValue
+
+				with canvas(device) as draw:
+					font = ImageFont.truetype('ProFontWindows.ttf', size=18)
+					draw.rectangle((0, 0, device.width, device.height), outline=0, fill=0)
+					if qrValue == lightSmartSwitchId:
+						dialog = 'wylacz  lampe' if lightController.status() else 'wlacz   lampe'
+						drawText(canvas, 32, 16, 8, f'{dialog}', font, 10)
+					drawProgressBar(canvas, 32, 48, 64, 8, perc)
+					#drawText(canvas, 0, 0, 8, f'{poorSignal}', font, 8)
+
+				if perc >= 1.0:
+					perc = 0.0
+					if lightController.status():
+						lightController.turnOff()
+					else:
+						lightController.turnOn()			
